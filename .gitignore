@@ -139,3 +139,5 @@ data/mel_data_6_to_8s.ftr
 data/mel_data_8_to_10s.ftr
 data/mel_data_test_10.0s.ftr
 data/mel_data_train_10.0s.ftr
+
+/models

@@ -84,12 +84,13 @@ def run():
         audio_selected = st.selectbox(label = 'Sélection de la machine à prédire:', options = ["Aucun"])
 
     if (audio_selected != 'Aucun'):
+        audio_path_selected = df.pathname.loc[(df.filename == audio_selected) & (df.machine_type == machine_selected)].iloc[0]
+        st.audio(audio_path_selected)
         model_choisi = st.selectbox(label = "Modèles de classification", options = ["Aucun", "Autoencoder", "Machine Learning", "Deep Learning"])
     else:
         model_choisi = st.selectbox(label = "Modèles de classification", options = ["Aucun"])
         
-    if model_choisi != 'Aucun':
-        audio_path_selected = df.pathname.loc[(df.filename == audio_selected) & (df.machine_type == machine_selected)].iloc[0]
+    if model_choisi != 'Aucun':        
         y, sr = librosa.load(audio_path_selected, sr=None, duration=duration, res_type='kaiser_fast')
         vector = librosa.feature.melspectrogram(y=y, sr=sr, n_fft=n_fft, hop_length=hop_length, n_mels=n_mels)
 
