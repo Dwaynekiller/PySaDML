@@ -12,7 +12,6 @@ from mpl_toolkits.mplot3d import Axes3D
 
 import librosa
 import tensorflow as tf
-import keras
 from tensorflow.keras.models import Model, Sequential
 from tensorflow.keras.layers import Input, Conv2D, Dense, Dropout, Flatten, MaxPooling2D, AvgPool2D, BatchNormalization, UpSampling2D
 from tensorflow.keras import backend as K
@@ -311,13 +310,14 @@ def model_metric_report(model, X_train=None, y_train=None, X_test=None, y_test=N
         train_accuracy = model.evaluate(X_train, y_train, verbose=0)
         test_accuracy = model.evaluate(X_test, y_test, verbose=0)
     else:
-        train_accuracy = model.evaluate_generator(train_data, verbose=0)
-        test_accuracy = model.evaluate_generator(test_data, verbose=0)
+        train_accuracy = model.evaluate(train_data, verbose=0)
+        test_accuracy = model.evaluate(test_data, verbose=0)
 
-    # Calculate and report normalized error difference?
+    # Écart relatif entre la perte d'entraînement et la perte de test (indicateur de
+    # sur-apprentissage). Ce n'est PAS un taux d'erreur de classification.
     max_err = max(train_accuracy[0], test_accuracy[0])
     min_err = min(train_accuracy[0], test_accuracy[0])
-    error_rate = 1.0 - (min_err / max_err)
+    loss_gap = 1.0 - (min_err / max_err)
 
     # Pint Train vs Test report
     print('{:<10s}{:>14s}{:>14s}'.format("", "LOSS", "ACCURACY"))
@@ -326,7 +326,7 @@ def model_metric_report(model, X_train=None, y_train=None, X_test=None, y_test=N
     print('{:<10s}{:>14.4f}{:>14.2%}'.format( "Test:", test_accuracy[0], test_accuracy[1]))
     print('-' * 38)
     print()
-    print('{:<10s}{:>13.2%}{:>1s}'.format("Error rate ", error_rate, ""))
+    print('{:<10s}{:>13.2%}{:>1s}'.format("Écart relatif des pertes ", loss_gap, ""))
 #---------------------------------------------------------------------------------------------
 
 #---------------------------------------------------------------------------------------------
@@ -464,25 +464,34 @@ def target_metric_report(y_true, y_pred, class_label):
 #---------------------------------------------------------------------------------------------
 # pred_and_plot_audio
 #---------------------------------------------------------------------------------------------    
-def pred_and_plot_audio(model, file_path, class_label, featuretoextract, n_mels=64, n_mfcc=20, sec_max=11.0, duration=None, normalize=False):
+def pred_and_plot_audio(model, file_path, class_label, featuretoextract, n_mels=64, n_mfcc=20, n_fft=2048, hop_length=512, sec_max=11.0, duration=None, normalize=False, scaler=None):
     """
-    Imports an image located at filename, makes a prediction on it with
-    a trained model and plots the image with the predicted class as the title.
-    """
-    # Import the target image and preprocess it
-    if featuretoextract == 'mfcc':
-        features, samplingrate = common.get_mfcc(file_path, hop_length=512, n_mels=64, n_mfcc=20, offset=0.0, duration=duration, normalize=normalize)
-        
-    if featuretoextract == 'mel':
-        features, samplingrate = common.get_mel(filename, n_mels, normalize=normalize)
-        
-    if featuretoextract == 'mel-mfcc':
-        features, samplingrate = common.get_mel_mfcc(filename, n_mfcc, n_mels, normalize=normalize)
-        
-    frames_max = int((sec_max * samplingrate) // 512 + 1)
+    Charge le fichier audio file_path, extrait les caractéristiques demandées
+    ('mfcc', 'mel' ou 'mel-mfcc'), fait une prédiction avec le modèle entraîné
+    et affiche l'audio avec la classe prédite.
 
-    if (features.shape[0] < frames_max):
-        features = librosa.util.fix_length(features, frames_max, axis=0)
+    scaler : le transformeur (ex. Pipeline StandardScaler/MinMaxScaler) ajusté sur
+    les données d'entraînement. Il doit être appliqué ici aussi, sinon le modèle
+    reçoit des valeurs à une autre échelle qu'à l'entraînement.
+    """
+    # Arguments nommés : en positionnel, n_mels se retrouvait dans hop_length
+    # et n_mfcc dans n_fft.
+    if featuretoextract == 'mfcc':
+        features, samplingrate = common.get_mfcc(file_path, hop_length=hop_length, n_mels=n_mels, n_mfcc=n_mfcc, duration=duration, normalize=normalize)
+    elif featuretoextract == 'mel':
+        features, samplingrate = common.get_mel(file_path, hop_length=hop_length, n_mels=n_mels, n_fft=n_fft, duration=duration, normalize=normalize)
+    elif featuretoextract == 'mel-mfcc':
+        features, samplingrate = common.get_mel_mfcc(file_path, n_fft=n_fft, hop_length=hop_length, n_mels=n_mels, n_mfcc=n_mfcc, duration=duration, normalize=normalize)
+    else:
+        raise ValueError("featuretoextract doit valoir 'mfcc', 'mel' ou 'mel-mfcc'")
+
+    # Les trames (le temps) sont sur l'axe 1 : (n_coefficients, n_trames).
+    # fix_length complète ou tronque pour obtenir exactement la taille attendue par le modèle.
+    frames_max = int((sec_max * samplingrate) // hop_length + 1)
+    features = librosa.util.fix_length(features, size=frames_max, axis=1)
+
+    if scaler is not None:
+        features = scaler.transform(features.reshape(1, -1)).reshape(features.shape)
     
     features = features.reshape(features.shape[0], features.shape[1], 1)
     
@@ -499,7 +508,7 @@ def pred_and_plot_audio(model, file_path, class_label, featuretoextract, n_mels=
     print(f"Prediction: {pred_class}")
     print(f"-------------------------")
     
-    return common.display_audio(filename)
+    return common.display_audio(file_path)
 #---------------------------------------------------------------------------------------------
 
 #---------------------------------------------------------------------------------------------
@@ -590,7 +599,7 @@ def tsne_scatter(features, labels, dimensions=2):
     plt.ylabel('Dimension 2', weight='bold').set_fontsize('10')
     # storing it to be displayed later
     plt.legend(loc='best')
-    plt.show;
+    plt.show()
 
 
 #model = Sequential()

@@ -1,59 +1,129 @@
-import streamlit as st
-import pandas as pd
-import numpy as np
+import json
+import pickle
+import sys
+from pathlib import Path
 
+import numpy as np
+import pandas as pd
+import streamlit as st
+import matplotlib.pyplot as plt
 import librosa
 import librosa.display
-import matplotlib.pyplot as plt
-import tensorflow as tf
-import pickle
-import time
+
+# Racine du dépôt : les chemins ne dépendent plus du dossier depuis lequel on lance l'app
+ROOT = Path(__file__).resolve().parents[2]
+DATA_ROOT = ROOT / 'data' / 'dev_data'
+MODELS_ROOT = ROOT / 'models'
+sys.path.insert(0, str(ROOT / 'notebooks'))
+from include import dcase_baseline as dcase  # noqa: E402
+from include import legacy_2022  # noqa: E402
 
 title = "Prédiction des données"
 sidebar_name = "Test prédiction"
-st.set_option('deprecation.showPyplotGlobalUse', False)
-
-# ----------- Data -------------------
-#################################################################################
-# Les dossiers dans lesquels se trouvent les audios.
-#################################################################################
-TRAIN_SUBFOLDER = 'train'
-TEST_SUBFOLDER = 'test'
-#################################################################################
 
 #################################################################################
-# Paramètres des fonctions audio Librosa
+# Modèles DCASE (un autoencodeur par type de machine, entraîné sur train seulement)
 #################################################################################
-n_mels=64
-n_fft=2**13
-hop_length=2**11
-duration = 10.0
+DCASE_DIR = MODELS_ROOT / 'dcase_baseline'
+
+#################################################################################
+# Modèles de la soutenance 2022 (remis en état par notebooks/include/legacy_2022.py)
+#################################################################################
+LEGACY_DIR = MODELS_ROOT / 'weight_train'
 #################################################################################
 
-@st.cache
+
+@st.cache_data
 def get_data():
-    """
-    This function return a pandas DataFrame with the list of the wav files.
-    """
+    """Fichiers du dossier test (les seuls qui contiennent des anomalies)."""
+    df = dcase.load_dataset_index(DATA_ROOT)
+    df['filename'] = df.pathname.map(lambda p: Path(p).name)
+    return df[df.data_split == 'test'].reset_index(drop=True)
 
-    df = pd.read_csv('./../data/dev_data.csv', dtype={"machine_id": "str", "sample_id": "str"})
-    df = df.drop(['sample_id','audio_format', 'machine_kind'], axis=1)
-    df = df[(df.data_split == TEST_SUBFOLDER)]
-    return df
 
-def load_model_ae():
-    model_ae = tf.keras.models.load_model('./../models/weight_train/Autoencoder/model_1/model_1')
-    return model_ae
-    
-@st.cache
-def load_model_svm():
-    model_svm = pickle.load(open("./../models/weight_train/Machine_L/model_svm", 'rb'))
-    return model_svm
-    
-def load_model_cnn():
-    model_cnn = tf.keras.models.load_model('./../models/weight_train/Deep_L')
-    return model_cnn
-    
+@st.cache_resource
+def load_dcase_model(machine_type):
+    import keras
+    model = keras.models.load_model(DCASE_DIR / f'{machine_type}.keras')
+    info = json.loads((DCASE_DIR / f'{machine_type}.json').read_text(encoding='utf-8'))
+    return model, info
+
+
+@st.cache_data
+def load_dcase_metrics():
+    path = DCASE_DIR / 'metrics_by_machine_id.csv'
+    return pd.read_csv(path) if path.exists() else None
+
+
+@st.cache_resource
+def load_legacy():
+    import keras
+    with open(LEGACY_DIR / 'Machine_L' / 'model_svm', 'rb') as f:
+        svm = pickle.load(f)
+    return {'svm': svm,
+            'lenet': keras.models.load_model(LEGACY_DIR / legacy_2022.LENET_FILE),
+            'ae': keras.models.load_model(LEGACY_DIR / legacy_2022.AE_FILE),
+            'scalers': legacy_2022.load_scalers(LEGACY_DIR)}
+
+
+def run_dcase(path, machine_type, machine_id):
+    model, info = load_dcase_model(machine_type)
+    with st.spinner('Calcul du score d\'anomalie...'):
+        score, is_anomaly, logmel, errors = dcase.predict_file(path, model, info)
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Score d'anomalie", f"{score:.2f}")
+    col2.metric("Seuil (" + machine_type + ")", f"{info['threshold']:.2f}")
+    metrics = load_dcase_metrics()
+    if metrics is not None:
+        row = metrics[(metrics.machine_type == machine_type) & (metrics.machine_id == machine_id)]
+        if len(row):
+            col3.metric("AUC du modèle sur " + machine_id, f"{row.AUC.iloc[0]:.2f}")
+    if is_anomaly:
+        st.error("Le son est anormal : score supérieur au seuil.")
+    else:
+        st.success("Le son est normal : score inférieur au seuil.")
+    st.caption("Seuil : " + info['threshold_rule'] + ". Le jeu de test n'a pas servi à le choisir.")
+
+    fig, axes = plt.subplots(2, 1, figsize=(12, 6), sharex=True, gridspec_kw={'height_ratios': [2, 1]})
+    librosa.display.specshow(logmel, sr=dcase.SR, hop_length=dcase.HOP_LENGTH, x_axis='time', y_axis='mel',
+                             cmap='viridis', ax=axes[0])
+    axes[0].set(title='Log-mel spectrogramme', xlabel='')
+    t = librosa.frames_to_time(np.arange(len(errors)) + dcase.N_FRAMES // 2, sr=dcase.SR, hop_length=dcase.HOP_LENGTH)
+    axes[1].plot(t, errors, color='tab:red', lw=0.8)
+    axes[1].axhline(info['threshold'], color='k', ls='--', lw=0.8, label='seuil (moyenne sur le fichier)')
+    axes[1].set(ylabel='erreur', xlabel='temps (s)', title='Erreur de reconstruction au cours du temps')
+    axes[1].legend(loc='upper right')
+    fig.tight_layout()
+    st.pyplot(fig)
+
+
+def run_legacy(path, machine_type, model_choisi):
+    st.warning("Modèles de la soutenance 2022, conservés pour mémoire : ils ont été évalués avec un protocole "
+               "optimiste (voir le notebook « BASELINE DCASE »). Préférer l'autoencodeur DCASE.")
+    if not (LEGACY_DIR / legacy_2022.SCALERS_FILE).exists():
+        st.error("Modèles 2022 non préparés : exécuter « python -m include.legacy_2022 » depuis le dossier notebooks.")
+        return
+    legacy = load_legacy()
+    with st.spinner('Prédiction...'):
+        mel_db, mel2_db = legacy_2022.mel_features(path)
+        if model_choisi == "Autoencodeur 2022":
+            mse = legacy_2022.predict_autoencoder(legacy['ae'], mel_db, legacy['scalers'])
+            st.write("Erreur de reconstruction : {:.3f} (seuil {})".format(mse, legacy_2022.THRESHOLD_AE))
+            is_normal = mse < legacy_2022.THRESHOLD_AE
+        else:
+            if model_choisi == "SVM 2022":
+                predicted = legacy_2022.predict_svm(legacy['svm'], mel_db, legacy['scalers'])
+            else:
+                predicted, _ = legacy_2022.predict_lenet(legacy['lenet'], mel2_db, legacy['scalers'])
+            st.write("Type de machine reconnu : **" + predicted + "**")
+            st.caption("Règle 2022 : si le type de machine est mal reconnu, le son est considéré comme anormal.")
+            is_normal = predicted == machine_type
+    if is_normal:
+        st.success("Le son est normal")
+    else:
+        st.error("Le son est anormal")
+
 
 def run():
 
@@ -61,84 +131,30 @@ def run():
 
     st.title(title)
 
-    st.image("assets/PySaDML_process.png")
+    st.image(str(Path(__file__).resolve().parents[1] / "assets" / "PySaDML_process.PNG"))
 
     df = get_data()
-    
-    machine_list = np.append('Aucun', df.machine_type.unique())
-    condition_list = np.append('Aucun', df.condition.unique())
-    
-    machine_selected = st.radio("Choix du type de machine",machine_list)
-    
-    condition_selected = st.radio("Choix de la condition de la machine",condition_list)
-    
-    audio_path_selected = ''
-    audio_selected = 'Aucun'
-    model_choisi = 'Aucun'
-    prediction = ''
-    
-    if (machine_selected != 'Aucun') and (condition_selected != 'Aucun'):
-        audio_list = np.append('Aucun', df.filename.loc[(df.machine_type == machine_selected) & (df.condition == condition_selected)])
-        audio_selected = st.selectbox(label = 'Sélection de la machine à prédire:', options = audio_list)
-    else:    
-        audio_selected = st.selectbox(label = 'Sélection de la machine à prédire:', options = ["Aucun"])
 
-    if (audio_selected != 'Aucun'):
-        audio_path_selected = df.pathname.loc[(df.filename == audio_selected) & (df.machine_type == machine_selected)].iloc[0]
-        st.audio(audio_path_selected)
-        model_choisi = st.selectbox(label = "Modèles de classification", options = ["Aucun", "Autoencoder", "Machine Learning", "Deep Learning"])
+    col1, col2, col3 = st.columns(3)
+    machine_selected = col1.selectbox("Type de machine", sorted(df.machine_type.unique()))
+    df_m = df[df.machine_type == machine_selected]
+    id_selected = col2.selectbox("Identifiant de la machine", sorted(df_m.machine_id.unique()))
+    condition_selected = col3.selectbox("Condition réelle", ['normal', 'anomaly'])
+    files = df_m[(df_m.machine_id == id_selected) & (df_m.condition == condition_selected)]
+    audio_selected = st.selectbox('Fichier à prédire', ['Aucun'] + files.filename.tolist())
+
+    model_choisi = st.radio("Modèle", ["Autoencodeur DCASE (un par machine)", "Autoencodeur 2022", "SVM 2022", "CNN LeNet 2022"],
+                            horizontal=True)
+
+    if audio_selected == 'Aucun':
+        return
+    path = files.pathname[files.filename == audio_selected].iloc[0]
+    st.audio(path)
+
+    if model_choisi.startswith("Autoencodeur DCASE"):
+        if not (DCASE_DIR / f'{machine_selected}.keras').exists():
+            st.error("Modèle introuvable dans " + str(DCASE_DIR) + " : exécuter le notebook « PySaDML - BASELINE DCASE ».")
+            return
+        run_dcase(path, machine_selected, id_selected)
     else:
-        model_choisi = st.selectbox(label = "Modèles de classification", options = ["Aucun"])
-        
-    if model_choisi != 'Aucun':        
-        y, sr = librosa.load(audio_path_selected, sr=None, duration=duration, res_type='kaiser_fast')
-        vector = librosa.feature.melspectrogram(y=y, sr=sr, n_fft=n_fft, hop_length=hop_length, n_mels=n_mels)
-
-        prediction = True #st.button('Predict')
-        if prediction:
-            if model_choisi == "Machine Learning":
-                model = load_model_svm()
-                vector_svm = vector.reshape(1,-1)
-                pred = model.predict(vector_svm)
-            if model_choisi == "Deep Learning":
-                model = load_model_cnn()
-                vector_cnn = vector.reshape(-1,vector.shape[0],vector.shape[1],1)
-                pred = model.predict(vector_cnn)
-            if model_choisi == "Autoencoder":
-                model = load_model_ae()
-                vector_ae = vector.reshape(1,-1)
-                vector_ae = vector_ae[:,:4096]
-                pred = model.predict(vector_ae)
-                mse = np.mean(np.power(vector_ae - pred, 2), axis=1)
-
-            st.progress(0)
-            with st.spinner('Predicting'):
-                time.sleep(2)
-               
-            if model_choisi == "Autoencoder":
-                if mse < 0.7:
-                    st.write("Le son est normale")
-                else:
-                     st.write("Le son est anormale")
-            else :
-                if pred[0] == machine_selected:
-                    st.write("La machine est normale")
-                else:
-                     st.write("La machine est anormale")
-            
-
-    if prediction and model_choisi == "Autoencoder":
-        col1, col2 = st.columns(2)
-        with col1:
-            vector_db = librosa.power_to_db(vector, ref=np.max)
-            fig, ax = plt.subplots()
-            librosa.display.specshow(vector_db, sr=sr, hop_length=hop_length, y_axis='log', x_axis='s', cmap='viridis', ax=ax)
-            ax.set(title="Audio sélectionné")
-            st.pyplot(fig)
-        with col2:
-            vector_db_pred = librosa.power_to_db(pred.reshape(vector.shape[0],vector.shape[0]), ref=np.max)
-            fig, ax = plt.subplots()
-            librosa.display.specshow(vector_db_pred, sr=sr, hop_length=hop_length, y_axis='log', x_axis='s', cmap='viridis', ax=ax)
-            ax.set(title='Audio prédit')
-            st.pyplot(fig)
-
+        run_legacy(path, machine_selected, model_choisi)

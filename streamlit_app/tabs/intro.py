@@ -10,9 +10,11 @@ import matplotlib.pyplot as plt
 title = "PySaDML."
 sidebar_name = "Introduction"
 
-@st.cache
+@st.cache_data
 def get_audio_path(id):
     df = pd.read_csv('./../data/dev_data.csv', dtype={"machine_id": "str", "sample_id": "str"})
+    # le CSV a été généré sous Windows : séparateurs \ remplacés par / pour fonctionner partout
+    df['pathname'] = df['pathname'].str.replace('\\', '/', regex=False)
     audio_path = df.pathname[id]
     return audio_path
     
@@ -142,7 +144,7 @@ def run():
     
     with col1:
         fig, ax = plt.subplots()
-        librosa.display.waveshow(y=y, alpha=0.5, sr=sr, x_axis='s', linewidth=0.5, color='red')
+        librosa.display.waveshow(y=y, alpha=0.5, sr=sr, linewidth=0.5, color='red')
         ax.set_ylabel('Amplitude')
         st.pyplot(fig)
     with col2:

@@ -1,0 +1,11 @@
+# Contexte de build Docker = racine du dépôt : on n'envoie que le code de l'app
+.git
+.venv
+data
+models
+archive
+images
+presentation
+notebooks/*.ipynb
+**/__pycache__
+**/.ipynb_checkpoints

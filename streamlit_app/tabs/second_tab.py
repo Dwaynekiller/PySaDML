@@ -33,15 +33,16 @@ TEST_SUBFOLDER = 'test'
 
 title = "Analyse Exploratoire des Données"
 sidebar_name = "EDA"
-st.set_option('deprecation.showPyplotGlobalUse', False)
 
-@st.cache
+@st.cache_data
 def get_data():
     df = pd.read_csv('./../data/dev_data.csv', dtype={"machine_id": "str", "sample_id": "str"})
+    # le CSV a été généré sous Windows : séparateurs \ remplacés par / pour fonctionner partout
+    df['pathname'] = df['pathname'].str.replace('\\', '/', regex=False)
     df = df.drop(['sample_id','audio_format', 'machine_kind'], axis=1)
     return df.sample(frac=1, random_state=1).reset_index(drop=True)
     
-@st.cache
+@st.cache_data
 def load_sound_file(audio_path, duration=None):
     try:
         y, sr = librosa.load(audio_path, sr=None, duration=duration, res_type='kaiser_fast')
@@ -53,7 +54,7 @@ def load_sound_file(audio_path, duration=None):
         st.write("Le fichier est corrompu ou n'existe pas!! : {}".format(audio_path))
         pass
 
-#@st.cache
+#@st.cache_data
 def audio_properties(dataframe):
     df = dataframe[['durations']]
     serie = df['durations'].value_counts()
@@ -66,9 +67,8 @@ def audio_properties(dataframe):
     axe.grid(False)
     st.pyplot(fig)
 
-    df_serie = pd.DataFrame(serie)
-    df_serie.reset_index(inplace=True)
-    df_serie = df_serie.rename(columns = {'index':'durée', 'durations':'Nombre'})
+    # noms de colonnes explicites : reset_index() ne nomme pas les colonnes pareil selon la version de pandas
+    df_serie = pd.DataFrame({'durée': serie.index, 'Nombre': serie.values})
     tot = df_serie['Nombre'].sum()
     df_serie['Moyenne'] = df_serie['Nombre'].apply(lambda x: 100*(x/tot)).map('{:,.1f}%'.format)
     df_serie['durée'] = df_serie['durée'].map('{:,.1f}s'.format)
@@ -89,16 +89,15 @@ def display_audio(audio_path, machine_type, condition, duration=None):
     else:
         color = 'green'
         
-    fig, axe = plt.subplots()
-    fig = plt.figure(figsize=(10, 5))
-    librosa.display.waveshow(y, alpha=0.5, sr=sr, x_axis='s', color=color, linewidth=0.5)
-    plt.title(machine_type + " - " + file_path.name)
+    fig, axe = plt.subplots(figsize=(10, 5))
+    librosa.display.waveshow(y, alpha=0.5, sr=sr, color=color, linewidth=0.5, ax=axe)
+    axe.set_title(machine_type + " - " + file_path.name)
     st.pyplot(fig)
     
     # del y, sr
     return st.audio(audio_path)
 
-@st.cache
+@st.cache_data
 def get_mel(file_path, hop_length=512, n_mels=128, n_fft=2048, duration=None):
     try:
         # Load audio file
@@ -118,7 +117,7 @@ def get_mel(file_path, hop_length=512, n_mels=128, n_fft=2048, duration=None):
 
     return mel_spectrogram, sr
 
-@st.cache
+@st.cache_data
 def get_mfcc(file_path, hop_length=512, n_mels=128, n_mfcc=20, duration=None):
     try:
 
@@ -179,15 +178,15 @@ def run():
         st.subheader('Crosstab')
         st.dataframe(pd.crosstab(df['condition'], df['machine_type']))
     with st.expander('Afficher la distribution sur la durée audio'):
-        st.write(audio_properties(df))
+        audio_properties(df)
     
     col1, col2 = st.columns(2)
     with col1:
-        fig = sns.catplot(x="data_split", hue="condition", data=df, kind="count")
-        st.pyplot(fig)
+        grid = sns.catplot(x="data_split", hue="condition", data=df, kind="count")
+        st.pyplot(grid.figure)
     with col2:
-        fig = sns.catplot(x="machine_type", hue="condition", data=df, kind="count")
-        st.pyplot(fig)
+        grid = sns.catplot(x="machine_type", hue="condition", data=df, kind="count")
+        st.pyplot(grid.figure)
 
     st.subheader('Spectogramme des fichiers audio')
     
@@ -249,13 +248,13 @@ def run():
             with col1:
                 vector1, sr1 = get_mel(normal_audio_path, hop_length=hop_length, n_mels=n_mels, n_fft=n_fft, duration=sec)
                 fig, ax = plt.subplots()
-                librosa.display.specshow(vector1, sr=sr1, hop_length=hop_length, y_axis='log', x_axis='s', cmap='viridis', ax=ax)
+                librosa.display.specshow(vector1, sr=sr1, hop_length=hop_length, y_axis='mel', x_axis='s', cmap='viridis', ax=ax)
                 ax.set(title=machine_selected + " - " + Path(normal_audio_path).name + ' ' + str(vector1.shape))
                 st.pyplot(fig)
             with col2:
                 vector2, sr2 = get_mel(anormal_audio_path, hop_length=hop_length, n_mels=n_mels, n_fft=n_fft, duration=sec)
                 fig, ax = plt.subplots()
-                librosa.display.specshow(vector2, sr=sr2, hop_length=hop_length, y_axis='log', x_axis='s', cmap='viridis', ax=ax)
+                librosa.display.specshow(vector2, sr=sr2, hop_length=hop_length, y_axis='mel', x_axis='s', cmap='viridis', ax=ax)
                 ax.set(title=machine_selected + " - " + Path(anormal_audio_path).name + ' ' + str(vector2.shape))
                 st.pyplot(fig)
         
@@ -265,13 +264,13 @@ def run():
             with col1:
                 vector1, sr1 = get_mfcc(normal_audio_path, hop_length=hop_length, n_mels=n_mels, n_mfcc=n_mfcc, duration=sec)
                 fig, ax = plt.subplots()
-                librosa.display.specshow(vector1, sr=sr1, hop_length=hop_length, y_axis='log', x_axis='s', ax=ax)
+                librosa.display.specshow(vector1, sr=sr1, hop_length=hop_length, x_axis='s', ax=ax)  # MFCC : coefficients, pas des Hz
                 ax.set(title=machine_selected + " - " + Path(normal_audio_path).name + ' ' + str(vector1.shape))
                 st.pyplot(fig)
             with col2:
                 vector2, sr2 = get_mfcc(anormal_audio_path, hop_length=hop_length, n_mels=n_mels, n_mfcc=n_mfcc, duration=sec)
                 fig, ax = plt.subplots()
-                librosa.display.specshow(vector2, sr=sr2, hop_length=hop_length, y_axis='log', x_axis='s', ax=ax)
+                librosa.display.specshow(vector2, sr=sr2, hop_length=hop_length, x_axis='s', ax=ax)  # MFCC : coefficients, pas des Hz
                 ax.set(title=machine_selected + " - " + Path(anormal_audio_path).name + ' ' + str(vector2.shape))
                 st.pyplot(fig)
 
