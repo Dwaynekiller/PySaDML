@@ -1,3 +1,11 @@
 /models
 Streamlit_prediction.ipynb
 /data
+
+# Environnement et fichiers générés
+.venv/
+__pycache__/
+.ipynb_checkpoints/
+
+# Brouillons et sauvegardes mis de côté (non versionnés)
+/archive/

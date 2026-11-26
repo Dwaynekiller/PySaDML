@@ -5,8 +5,12 @@
 import scipy
 import numpy as np           # linear algebra
 import pandas as pd          # data processing, CSV file I/O (e.g. pd.read_csv)
+import os
 import time, datetime
 import itertools
+
+from PIL import Image
+from tqdm import tqdm
 
 from pathlib import Path
 
@@ -34,9 +38,10 @@ def load_sound_file(audio_path, offset=0.0, duration=None):
         y = np.array(y)
     
         return y, sr
-    except:
-        print("Le fichier est corrompu ou n'existe pas!! : {}".format(audio_path))
-        pass
+    except Exception as e:
+        # On relance l'erreur : renvoyer None faisait planter l'appelant plus loin
+        # (y, sr = None), loin de la vraie cause.
+        raise IOError("Le fichier est corrompu ou n'existe pas!! : {}".format(audio_path)) from e
 #---------------------------------------------------------------------------------------------
  
 #---------------------------------------------------------------------------------------------
@@ -95,7 +100,6 @@ def load_metadata(data_path, ext):
         del df['name']
         
         df = df.astype(dtype= {"sample_id":"object","samplingrate":"int16","durations":"float64"})
-        df.sample(frac=1, random_state=100).reset_index(drop=True)
         
         with open(metadata_path, 'wb') as f:
             # Save dataset
@@ -167,10 +171,10 @@ def display_audio(audio_path, machine_type=None):
     print("Fréquence d'échantillonnage: {}".format(sr))
     print("Durée: {} seconds".format(y.shape[-1]/sr))
     
-    librosa.display.waveshow(y, alpha=0.5, sr=sr, x_axis='s', color=color, linewidth=0.5)
+    librosa.display.waveshow(y, alpha=0.5, sr=sr, color=color, linewidth=0.5)
     plt.title(file_path.name)
     
-    del y, sr, sec
+    del y, sr
     # Sound preview
     return IP.Audio(file_path)
 #---------------------------------------------------------------------------------------------
@@ -188,18 +192,18 @@ def display_both_audio(normal_path, anormal_path, machine_type=None):
     plt.subplot(131)
     file_path = Path(normal_path)
     normal_signal, sr = load_sound_file(file_path)
-    librosa.display.waveplot(normal_signal, sr=sr, alpha=0.5, color='blue', linewidth=0.5)
+    librosa.display.waveshow(normal_signal, sr=sr, alpha=0.5, color='blue', linewidth=0.5)
     plt.title('Signal normal\n' + file_path.name)
 
     plt.subplot(132)
     file_path = Path(anormal_path)
     abnormal_signal, sr_an = load_sound_file(file_path)
-    librosa.display.waveplot(abnormal_signal, sr=sr_an, alpha=0.6, color='red', linewidth=0.5)
+    librosa.display.waveshow(abnormal_signal, sr=sr_an, alpha=0.6, color='red', linewidth=0.5)
     plt.title('Signal anormal\n' + file_path.name)
 
     plt.subplot(133)
-    librosa.display.waveplot(abnormal_signal, sr=sr_an, alpha=0.6, color='red', linewidth=0.5, label='Signal anormal')
-    librosa.display.waveplot(normal_signal, sr=sr, alpha=0.5, color='blue', linewidth=0.5, label='Signal normal')
+    librosa.display.waveshow(abnormal_signal, sr=sr_an, alpha=0.6, color='red', linewidth=0.5, label='Signal anormal')
+    librosa.display.waveshow(normal_signal, sr=sr, alpha=0.5, color='blue', linewidth=0.5, label='Signal normal')
     plt.title('Les deux signaux')
     plt.legend();
     
@@ -215,14 +219,14 @@ def display_spectrum(anomaly, normal, size=(12, 8)):
 
     plt.subplot(121)
     y, sr = load_sound_file(Path(anomaly))
-    plt.plot(np.abs(librosa.stft(y)), color='red', alpha=0.6);
-    plt.title(Path(normal).name + ' - Signal anormal')
+    plt.plot(librosa.fft_frequencies(sr=sr), np.abs(librosa.stft(y)), color='red', alpha=0.6);
+    plt.title(Path(anomaly).name + ' - Signal anormal')
     plt.xlabel('Fréquence (Hz)')
     plt.ylabel('Amplitude')
 
     plt.subplot(122)
     y, sr = load_sound_file(Path(normal))
-    plt.plot(np.abs(librosa.stft(y)), color='blue', alpha=0.6);
+    plt.plot(librosa.fft_frequencies(sr=sr), np.abs(librosa.stft(y)), color='blue', alpha=0.6);
     plt.title(Path(normal).name + ' - Signal normal')
     plt.xlabel('Fréquence (Hz)')
     plt.ylabel('Amplitude')
@@ -435,7 +439,7 @@ def get_mfcc(file_path, hop_length=512, n_mels=64, n_mfcc=20, offset=0.0, durati
         y, sr = load_sound_file(file_path, offset=offset, duration=duration)
 
         # Calculate MFCCs
-        mfcc = librosa.feature.mfcc(y, sr=sr, hop_length=hop_length, n_mels=n_mels, n_mfcc=n_mfcc)
+        mfcc = librosa.feature.mfcc(y=y, sr=sr, hop_length=hop_length, n_mels=n_mels, n_mfcc=n_mfcc)
 
         if normalize:
             # Normalize MFCC between -1 and 1
@@ -510,14 +514,14 @@ def get_mfcc_mix(file_path, hop_length=512, n_mels=64, n_mfcc=20, offset=0.0, du
         y, sr = load_sound_file(file_path, offset=offset, duration=duration)
         
         # Compute MFCC coefficients
-        mfcc = librosa.feature.mfcc(y, sr=sr, hop_length=hop_length, n_mels=n_mels, n_mfcc=n_mfcc)
-        spectral_centroids = librosa.feature.spectral_centroid(y, sr=sr)
-        rolloff = librosa.feature.spectral_rolloff(y, sr=sr)
-        rms = librosa.feature.rms(y)
-        zcr1 = librosa.feature.zero_crossing_rate(y)
-        chroma_stft = librosa.feature.chroma_stft(y, sr=sr)
-        chroma_cqt = librosa.feature.chroma_cqt(y, sr=sr)
-        chroma_cens = librosa.feature.chroma_cens(y, sr=sr)
+        mfcc = librosa.feature.mfcc(y=y, sr=sr, hop_length=hop_length, n_mels=n_mels, n_mfcc=n_mfcc)
+        spectral_centroids = librosa.feature.spectral_centroid(y=y, sr=sr)
+        rolloff = librosa.feature.spectral_rolloff(y=y, sr=sr)
+        rms = librosa.feature.rms(y=y)
+        zcr1 = librosa.feature.zero_crossing_rate(y=y)
+        chroma_stft = librosa.feature.chroma_stft(y=y, sr=sr)
+        chroma_cqt = librosa.feature.chroma_cqt(y=y, sr=sr)
+        chroma_cens = librosa.feature.chroma_cens(y=y, sr=sr)
 
         # Concate MFCC coefficients
         mfcc_mix = np.concatenate((mfcc, spectral_centroids, rolloff, rms, zcr1, chroma_stft, chroma_cqt, chroma_cens), axis=0)
@@ -544,7 +548,7 @@ def get_mel_mfcc(file_path, n_fft=2048, hop_length=512, n_mels=64, n_mfcc=20, of
         y, sr = load_sound_file(file_path, offset=offset, duration=duration)
         
         # Calculate MFCCs
-        mfcc = librosa.feature.mfcc(y, sr=sr, hop_length=hop_length, n_mels=n_mels, n_mfcc=n_mfcc)
+        mfcc = librosa.feature.mfcc(y=y, sr=sr, hop_length=hop_length, n_mels=n_mels, n_mfcc=n_mfcc)
 
         # Computing the mel spectrograms
         mel_spectrogram = librosa.feature.melspectrogram(y=y, sr=sr, n_fft=n_fft, hop_length=hop_length, n_mels=n_mels)
@@ -569,6 +573,14 @@ def get_mel_mfcc(file_path, n_fft=2048, hop_length=512, n_mels=64, n_mfcc=20, of
     del y, mfcc, mel_spectrogram
 
     return mel_mfcc, sr
+#---------------------------------------------------------------------------------------------
+
+#---------------------------------------------------------------------------------------------
+# scale_minmax : ramène les valeurs d'un tableau dans l'intervalle [min, max]
+#---------------------------------------------------------------------------------------------
+def scale_minmax(X, min=0.0, max=1.0):
+    X_std = (X - X.min()) / (X.max() - X.min())
+    return X_std * (max - min) + min
 #---------------------------------------------------------------------------------------------
 
 #---------------------------------------------------------------------------------------------
@@ -598,7 +610,8 @@ def generate_spectrograms(list_files, output_dir, n_mels=64, n_fft=2048, hop_len
     for index in tqdm(range(len(list_files)), desc=f'Building spectrograms for {output_dir}'):
         # Building file name for the spectrogram PNG picture:
         file = list_files[index]
-        path_components = file.split('/')
+        # Path.parts fonctionne aussi sous Windows (séparateur '\'), contrairement à split('/')
+        path_components = Path(file).parts
         
         # machine_id = id_00, id_02...
         # sound_type = normal or abnormal
@@ -609,6 +622,7 @@ def generate_spectrograms(list_files, output_dir, n_mels=64, n_fft=2048, hop_len
         
         # Example: train/normal/normal-id_02-00000259.png:
         filename = os.path.join(output_dir, sound_type, filename)
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
 
         if not os.path.exists(filename):
             # Loading sound file and generate Mel spectrogram:
@@ -674,7 +688,8 @@ def create_mel_data(DATASET_ROOT, data, file, ext, n_fft=2048, hop_length=512, n
         mel_data['feature'] = mel_data['pathname'].apply(lambda x : mel_features_extractor(x, n_fft=n_fft, hop_length=hop_length, n_mels=n_mels, duration=duration).flatten())
         
         # featuredf = []
-        featuredf = pd.DataFrame(np.array(mel_data.feature.tolist()))
+        # index aligné sur mel_data, sinon pd.concat crée des NaN si 'data' n'a pas un index 0..n
+        featuredf = pd.DataFrame(np.array(mel_data.feature.tolist()), index=mel_data.index)
         # featuredf = featuredf[:,1:-1] #suppression d'une frame à gauche et à droite
         featuredf.rename(columns=lambda x : "mel"+str(x), inplace = True)
 
@@ -717,24 +732,17 @@ def create_mfcc_data(DATASET_ROOT, data, file, ext, hop_length=512, n_mfcc=20, d
     else:
         start_time = time.time()
         print("Création du fichier <{}> des métadonnées audio...".format(file))
-        mfcc_data = data[['pathname','machine_type','machine_kind','data_split','condition']]
+        mfcc_data = data[['pathname','machine_type','machine_kind','data_split','condition']].copy()
 
         mfcc_data['feature'] = mfcc_data['pathname'].apply(lambda x : mfcc_features_extractor(x, hop_length=hop_length, n_mfcc=n_mfcc, duration=duration).flatten())
 
-        featuredf = []
-#        featuredf = pd.DataFrame(np.array(mel_data.feature.tolist()))
-#        featuredf = featuredf[:,1:-1] #suppression d'une frame à gauche et à droite
-#        featuredf.rename(columns=lambda x : "mel"+str(x), inplace = True)
-#
-#        df = mel_data.drop('feature', axis=1)
-#        df = pd.concat([df, featuredf], axis=1)
+        # Une colonne par coefficient : un tableau numpy stocké tel quel dans un CSV
+        # devient une chaîne de caractères illisible au rechargement.
+        featuredf = pd.DataFrame(np.array(mfcc_data.feature.tolist()), index=mfcc_data.index)
+        featuredf.rename(columns=lambda x : "mfcc"+str(x), inplace = True)
 
-#        featuredf = pd.DataFrame(np.array(mfcc_data.feature.tolist()))
-#        featuredf.rename(columns=lambda x : "mfcc"+str(x), inplace = True)
-
-#        df = mfcc_data.drop('feature', axis=1)
-#        df = pd.concat([df, featuredf], axis=1)
-        df = mfcc_data.copy()
+        df = mfcc_data.drop('feature', axis=1)
+        df = pd.concat([df, featuredf], axis=1)
 
         with open(mfcc_data_train_location, 'wb') as f:
             # Save dataset
@@ -756,9 +764,9 @@ def create_mfcc_data(DATASET_ROOT, data, file, ext, hop_length=512, n_mfcc=20, d
 #---------------------------------------------------------------------------------------------
 #---------------------------------------------------------------------------------------------
 def mfcc_mean_features_extractor(file_path, hop_length=512, n_mels=64, n_mfcc=20, offset=0.0, duration=None):
-    y, sr = load_sound_file(file, offset=offset, duration=duration)
+    y, sr = load_sound_file(file_path, offset=offset, duration=duration)
     
-    mfcc_features = librosa.feature.mfcc(y, sr=sr, hop_length=hop_length, n_mels=n_mels, n_mfcc=n_mfcc)
+    mfcc_features = librosa.feature.mfcc(y=y, sr=sr, hop_length=hop_length, n_mels=n_mels, n_mfcc=n_mfcc)
     
     return np.mean(mfcc_features,axis=1)
 
@@ -780,11 +788,11 @@ def create_mfcc_mean_data(DATASET_ROOT, data, file, ext, hop_length=512, n_mfcc=
     else:
         start_time = time.time()
         print("Création du fichier <{}> des métadonnées audio...".format(file))
-        mfcc_data = data[['pathname','machine_type','machine_kind','condition']]
+        mfcc_data = data[['pathname','machine_type','machine_kind','condition']].copy()
 
         mfcc_data['feature'] = mfcc_data['pathname'].apply(lambda x : mfcc_mean_features_extractor(x, hop_length=hop_length, n_mfcc=n_mfcc, duration=duration).T)
 
-        featuredf = pd.DataFrame(np.array(mfcc_data.feature.tolist()))
+        featuredf = pd.DataFrame(np.array(mfcc_data.feature.tolist()), index=mfcc_data.index)
         featuredf.rename(columns=lambda x : "mfcc"+str(x), inplace = True)
 
         df = mfcc_data.drop('feature', axis=1)
@@ -877,7 +885,7 @@ def tsne_scatter(features, labels, dimensions=2):
     plt.ylabel('Dimension 2', weight='bold').set_fontsize('10')
     # storing it to be displayed later
     plt.legend(loc='best')
-    plt.show;
+    plt.show()
 #---------------------------------------------------------------------------------------------
 # plot_confusion_matrix
 #---------------------------------------------------------------------------------------------    
